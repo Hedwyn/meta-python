@@ -382,8 +382,9 @@ fn packageExe(b: *std.Build, cpython_dir: std.Build.LazyPath, version: []const u
 /// Runs Tools/build/deepfreeze.py, which expects each frozen-module header
 /// paired with its module name as a single "path:name" argument. The path
 /// half is only known once the freeze Run steps above actually execute, so
-/// the pairing is done by a small shell wrapper at run time instead of by
-/// Zig at graph-construction time.
+/// the pairing can't be done in build.zig at graph-construction time --
+/// instead a small native helper (build/tools/deepfreeze_runner.zig) does it
+/// at run time, rather than shelling out to `sh`.
 fn addDeepfreeze(
     b: *std.Build,
     cpython_dir: std.Build.LazyPath,
@@ -391,17 +392,14 @@ fn addDeepfreeze(
     headers: []const std.Build.LazyPath,
     names: []const []const u8,
 ) std.Build.LazyPath {
-    const script =
-        \\py="$1"; script="$2"; out="$3"; shift 3
-        \\args=""
-        \\while [ "$#" -ge 2 ]; do
-        \\  args="$args $1:$2"
-        \\  shift 2
-        \\done
-        \\exec "$py" "$script" $args -o "$out"
-    ;
-    const run = std.Build.Step.Run.create(b, "deepfreeze");
-    run.addArgs(&.{ "sh", "-c", script, "sh" });
+    const runner_mod = b.createModule(.{
+        .root_source_file = b.path("build/tools/deepfreeze_runner.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    const runner = b.addExecutable(.{ .name = "deepfreeze_runner", .root_module = runner_mod });
+
+    const run = b.addRunArtifact(runner);
     run.addFileArg(bootstrap_packaged_exe);
     run.addFileArg(cpython_dir.path(b, "Tools/build/deepfreeze.py"));
     const out = run.addOutputFileArg("deepfreeze.c");
