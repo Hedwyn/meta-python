@@ -1,0 +1,11 @@
+.{
+    .name = .meta_python,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.17.0-dev.857",
+    .fingerprint = 0xb68c175e8c6315d7,
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+    },
+}
