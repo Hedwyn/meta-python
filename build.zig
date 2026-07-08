@@ -12,21 +12,24 @@
 const std = @import("std");
 const Makefile = @import("build/makefile.zig");
 const Utils = @import("build/utils.zig");
+const Options = @import("build/options.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const options = Options.parseOptions(b);
 
     switch (target.result.os.tag) {
-        .windows => buildWindows(b, target, optimize),
-        else => buildPosix(b, target, optimize),
+        .windows => buildWindows(b, target, optimize, options),
+        else => buildPosix(b, target, optimize, options),
     }
 }
 
-fn buildWindows(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+fn buildWindows(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, options: Options.BuildOptions) void {
     _ = b;
     _ = target;
     _ = optimize;
+    _ = options;
     @panic(
         "Windows is not supported yet. CPython builds on Windows via PCBuild/MSBuild " ++
             "project files, not autotools' configure+make -- that needs its own build " ++
@@ -34,7 +37,10 @@ fn buildWindows(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
     );
 }
 
-fn buildPosix(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+fn buildPosix(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, options: Options.BuildOptions) void {
+    // TODO: not yet consulted -- extension modules still link whatever
+    // system libs `./configure` found, regardless of these options.
+    _ = options;
     const gpa = b.allocator;
     const build_root = b.root.root_dir.path orelse @panic("expected absolute build root path");
     const cpython_dir_str = b.pathJoin(&.{ build_root, "cpython" });
