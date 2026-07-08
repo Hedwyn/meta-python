@@ -51,3 +51,31 @@ pub fn parseOptions(b: *std.Build) BuildOptions {
     }
     return options;
 }
+
+const ModuleDeps = struct {
+    linkage_field: []const u8,
+    modules: []const []const u8,
+};
+
+/// Which CPython extension module(s) each dependency's linkage option gates.
+const module_deps = [_]ModuleDeps{
+    .{ .linkage_field = "openssl_linkage", .modules = &.{ "_ssl", "_hashlib" } },
+    .{ .linkage_field = "libffi_linkage", .modules = &.{"_ctypes"} },
+    .{ .linkage_field = "ncurses_linkage", .modules = &.{ "_curses", "_curses_panel" } },
+    .{ .linkage_field = "readline_linkage", .modules = &.{"readline"} },
+    .{ .linkage_field = "sqlite_linkage", .modules = &.{"_sqlite3"} },
+    .{ .linkage_field = "zlib_linkage", .modules = &.{"zlib"} },
+    .{ .linkage_field = "bz2_linkage", .modules = &.{"_bz2"} },
+    .{ .linkage_field = "lzma_linkage", .modules = &.{"_lzma"} },
+    .{ .linkage_field = "tk_linkage", .modules = &.{"_tkinter"} },
+};
+
+/// True if `name` is a third-party-backed module whose dependency is off (linkage=null).
+pub fn isModuleDisabled(options: BuildOptions, name: []const u8) bool {
+    inline for (module_deps) |dep| {
+        for (dep.modules) |m| {
+            if (std.mem.eql(u8, m, name)) return @field(options, dep.linkage_field) == null;
+        }
+    }
+    return false;
+}

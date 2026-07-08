@@ -38,9 +38,6 @@ fn buildWindows(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
 }
 
 fn buildPosix(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, options: Options.BuildOptions) void {
-    // TODO: not yet consulted -- extension modules still link whatever
-    // system libs `./configure` found, regardless of these options.
-    _ = options;
     const gpa = b.allocator;
     const build_root = b.root.root_dir.path orelse @panic("expected absolute build root path");
     const cpython_dir_str = b.pathJoin(&.{ build_root, "cpython" });
@@ -195,6 +192,10 @@ fn buildPosix(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     var shared_libs: std.ArrayList(*std.Build.Step.Compile) = .empty;
     for (shared_names) |name| {
         if (Utils.skip_modules.has(name)) continue;
+        if (Options.isModuleDisabled(options, name)) {
+            std.debug.print("skipping module '{s}': dependency linkage is off\n", .{name});
+            continue;
+        }
         const lib = Utils.addSharedModule(b, cpython_dir, mk, gpa, target, optimize, common_module_cflags, name) orelse continue;
         shared_libs.append(gpa, lib) catch @panic("OOM");
     }
