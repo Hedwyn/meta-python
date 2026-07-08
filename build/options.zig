@@ -39,17 +39,31 @@ const static_implemented = std.StaticStringMap(void).initComptime(.{
     .{"zlib"}, .{"openssl"}, .{"libffi"},
 });
 
-/// Reads `-D{lib}-linkage=...` for every third-party dependency (defaulting
-/// to "off" when unset). Panics on "static" for libs not in
-/// `static_implemented`: nothing builds those from source yet.
+/// Default linkage per lib: mirrors python-build-standalone (pbs, what `uv`
+/// ships) for now -- pbs statically embeds every one of these except tk into
+/// its `libpython`, keeping only `_tkinter` as an external dlopen'd `.so`
+/// (see dynlibs.md §6). We default to "static" wherever that's actually
+/// implemented (`static_implemented`) and fall back to "dynamic" -- stock
+/// CPython's own auto-detect-and-link behavior -- for the rest, until static
+/// support for them lands too.
+const default_overrides = std.StaticStringMap([]const u8).initComptime(.{
+    .{ "zlib", "static" },
+    .{ "openssl", "static" },
+    .{ "libffi", "static" },
+});
+
+/// Reads `-D{lib}-linkage=...` for every third-party dependency (see
+/// `default_overrides` for per-lib defaults). Panics on "static" for libs
+/// not in `static_implemented`: nothing builds those from source yet.
 pub fn parseOptions(b: *std.Build) BuildOptions {
     var options: BuildOptions = undefined;
     inline for (lib_names) |name| {
+        const default = default_overrides.get(name) orelse "dynamic";
         const raw = b.option(
             []const u8,
             name ++ "-linkage",
-            "Linkage for " ++ name ++ ": static, dynamic, or off (default: off)",
-        ) orelse "off";
+            b.fmt("Linkage for " ++ name ++ ": static, dynamic, or off (default: {s})", .{default}),
+        ) orelse default;
         const linkage = parseLinkage(raw);
         if (linkage) |l| if (l == .static and !static_implemented.has(name))
             std.debug.panic(name ++ "-linkage=static: static linking not implemented yet", .{});
