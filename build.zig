@@ -86,9 +86,12 @@ fn buildPosix(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
 
     const freeze_entries = mk.freezeEntries(gpa);
 
-    // ---- stage 1: freeze_module, a minimal interpreter that can only freeze
-    // Modules/getpath.py and the importlib bootstrap modules (nothing else
-    // works yet: there is no dynamic sys.path/import machinery at this point).
+    // ---- stage 1: freeze_module (a compiled tool, not a real interpreter)
+    // A minimal C program that embeds the CPython interpreter but only enough
+    // to run Programs/_freeze_module.c's frozen-module compilation logic. Used
+    // to freeze the first 4 bootstrap modules (importlib._bootstrap, etc.) whose
+    // headers are required to compile stage 2. Uses getpath_noop.c (a stub) since
+    // it doesn't need to discover sys.path -- it just freezes files passed as args.
     const freeze_module_exe = Utils.addExe(b, cpython_dir, b.graph.host, .Debug, gpa, .{
         .name = "freeze_module",
         .core_sources = core_sources.items,
@@ -112,9 +115,12 @@ fn buildPosix(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
         early_headers_list.append(gpa, out) catch @panic("OOM");
     }
 
-    // ---- stage 2: _bootstrap_python, a real (if minimal) interpreter with
-    // enough frozen modules to run pure-Python build scripts. Used only to
-    // freeze/deepfreeze the rest of the stdlib bootstrap set below.
+    // ---- stage 2: _bootstrap_python (a real interpreter, not just a tool)
+    // Has the 4 bootstrap frozen modules baked in and uses real getpath.c
+    // (discovers Lib/ relative to argv[0]). Packaged together with Lib/ so it can
+    // run pure-Python build scripts like Programs/_freeze_module.py (which freezes
+    // the remaining ~20 stdlib modules). Not exposed to end users; only exists to
+    // bootstrap stage 3.
     const bootstrap_exe = Utils.addExe(b, cpython_dir, b.graph.host, .Debug, gpa, .{
         .name = "_bootstrap_python",
         .core_sources = core_sources.items,
@@ -155,10 +161,12 @@ fn buildPosix(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
 
     const deepfreeze_c = Utils.addDeepfreeze(b, cpython_dir, bootstrap_packaged_exe, deepfreeze_headers.items, deepfreeze_names.items);
 
-    // ---- stage 3: the real "python" executable. Extension modules that
-    // configure detected are *not* linked in here -- they're built as
-    // standalone shared objects below and dlopen()'d at import time, same as
-    // any normal CPython build.
+    // ---- stage 3: the final "python" executable (the one users run)
+    // Built with the target optimization level (not Debug like stages 1-2).
+    // Includes all ~24 frozen modules (4 bootstrap + 20 regular), deepfroze stdlib
+    // bytecode, and core interpreter. Extension modules are NOT linked in statically
+    // -- they're built as standalone .so files below and dlopen()'d at import time,
+    // same as CPython normally does. This enables dynamic linking and relocatability.
     const final_exe = Utils.addExe(b, cpython_dir, target, optimize, gpa, .{
         .name = "python",
         .core_sources = core_sources.items,

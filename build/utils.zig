@@ -186,12 +186,14 @@ pub fn packageExe(b: *std.Build, cpython_dir: std.Build.LazyPath, version: []con
     return wf.addCopyFile(exe.getEmittedBin(), b.fmt("bin/{s}", .{exe.out_filename}));
 }
 
-/// Runs Tools/build/deepfreeze.py, which expects each frozen-module header
-/// paired with its module name as a single "path:name" argument. The path
-/// half is only known once the freeze Run steps above actually execute, so
-/// the pairing can't be done in build.zig at graph-construction time --
-/// instead a small native helper (build/tools/deepfreeze_runner.zig) does it
-/// at run time, rather than shelling out to `sh`.
+/// Invokes Tools/build/deepfreeze.py (a pure-Python script run by the stage-2
+/// bootstrap interpreter) to combine all frozen module headers into a single
+/// Python/deepfreeze/deepfreeze.c file, which embeds the entire frozen stdlib
+/// bytecode into the final executable. Each frozen module header is passed as
+/// a "path:name" argument. The path half is only known once the freeze Run
+/// steps above actually execute, so the pairing can't be done in build.zig at
+/// graph-construction time -- instead a small native helper
+/// (build/tools/deepfreeze_runner.zig) does it at run time.
 pub fn addDeepfreeze(
     b: *std.Build,
     cpython_dir: std.Build.LazyPath,
