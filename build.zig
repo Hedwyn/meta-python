@@ -198,6 +198,16 @@ fn buildPosix(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
         const zlib_dep = b.dependency("zlib", .{ .target = target, .optimize = optimize });
         static_overrides.append(gpa, .{ .lib_name = "z", .artifact = zlib_dep.artifact("z") }) catch @panic("OOM");
     }
+    if (options.openssl_linkage == .static) {
+        const openssl_dep = b.dependency("openssl", .{ .target = target, .optimize = optimize });
+        const openssl_lib = openssl_dep.artifact("openssl");
+        static_overrides.append(gpa, .{ .lib_name = "ssl", .artifact = openssl_lib }) catch @panic("OOM");
+        static_overrides.append(gpa, .{ .lib_name = "crypto", .artifact = openssl_lib }) catch @panic("OOM");
+    }
+    if (options.libffi_linkage == .static) {
+        const libffi_dep = b.dependency("libffi", .{ .target = target, .optimize = optimize });
+        static_overrides.append(gpa, .{ .lib_name = "ffi", .artifact = libffi_dep.artifact("ffi") }) catch @panic("OOM");
+    }
 
     var shared_libs: std.ArrayList(*std.Build.Step.Compile) = .empty;
     for (shared_names) |name| {

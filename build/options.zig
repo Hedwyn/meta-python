@@ -36,7 +36,7 @@ fn parseLinkage(raw: []const u8) ?Linkage {
 /// Libs that can actually be built from source and statically linked in.
 /// Everything else in `lib_names` still only supports "dynamic"/"off".
 const static_implemented = std.StaticStringMap(void).initComptime(.{
-    .{"zlib"},
+    .{"zlib"}, .{"openssl"}, .{"libffi"},
 });
 
 /// Reads `-D{lib}-linkage=...` for every third-party dependency (defaulting
