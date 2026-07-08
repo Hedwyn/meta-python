@@ -17,6 +17,19 @@ pub const BuildOptions = struct {
     bz2_linkage: ?Linkage,
     lzma_linkage: ?Linkage,
     tk_linkage: ?Linkage,
+    /// Unlike the third-party deps above, libc is mandatory -- no "off".
+    /// Defaults to `dynamic`. `static` builds fine but currently produces a
+    /// mostly non-functional interpreter: extension modules are still
+    /// separate `.so`s dlopen()'d at import time (see build.zig), and a
+    /// fully static (or static-PIE) executable has no usable dynamic symbol
+    /// table for them to resolve Python C-API calls (e.g. `PyExc_OSError`)
+    /// against -- confirmed empirically (`readelf -d`/`--dyn-syms`, and
+    /// static-PIE + explicit `dlopen(NULL, RTLD_GLOBAL)` self-registration
+    /// still fail with "undefined symbol"). This is the exact libdl
+    /// constraint research.md already flags. Only core/frozen stdlib works
+    /// under `static` until extensions are statically linked into the exe
+    /// instead of dlopen'd.
+    libc_linkage: Linkage,
 };
 
 const lib_names = [_][]const u8{
@@ -31,6 +44,14 @@ fn parseLinkage(raw: []const u8) ?Linkage {
     if (std.mem.eql(u8, raw, "dynamic")) return .dynamic;
     if (std.mem.eql(u8, raw, "off")) return null;
     std.debug.panic("invalid linkage '{s}': expected 'static', 'dynamic', or 'off'", .{raw});
+}
+
+/// Same as `parseLinkage` but for options with no "off" variant (libc can't
+/// be turned off -- every executable needs one).
+fn parseRequiredLinkage(raw: []const u8) Linkage {
+    if (std.mem.eql(u8, raw, "static")) return .static;
+    if (std.mem.eql(u8, raw, "dynamic")) return .dynamic;
+    std.debug.panic("invalid linkage '{s}': expected 'static' or 'dynamic'", .{raw});
 }
 
 /// Libs that can actually be built from source and statically linked in.
@@ -69,6 +90,22 @@ pub fn parseOptions(b: *std.Build) BuildOptions {
             std.debug.panic(name ++ "-linkage=static: static linking not implemented yet", .{});
         @field(options, name ++ "_linkage") = linkage;
     }
+
+    const libc_raw = b.option(
+        []const u8,
+        "libc-linkage",
+        "Linkage for libc: static or dynamic (default: dynamic)",
+    ) orelse "dynamic";
+    options.libc_linkage = parseRequiredLinkage(libc_raw);
+    if (options.libc_linkage == .static) std.debug.print(
+        "warning: libc-linkage=static produces an executable with no usable " ++
+            "dynamic symbol table -- every dlopen()'d extension module (zlib, " ++
+            "ssl, sqlite3, ctypes, _socket, ...) will fail to import with " ++
+            "'undefined symbol'. Only core/frozen stdlib works. See the " ++
+            "libc_linkage doc comment in build/options.zig.\n",
+        .{},
+    );
+
     return options;
 }
 

@@ -110,6 +110,10 @@ pub const ExeOptions = struct {
     frozen_headers: []const std.Build.LazyPath,
     /// Flags for Python/dynload_shlib.c (needs -DSOABI, which core_cflags lacks).
     dynload_flags: []const []const u8,
+    /// Whether the executable itself (and the libc it links) is statically
+    /// or dynamically linked -- independent of the third-party dependency
+    /// StaticOverrides above, which only affect extension `.so`s.
+    linkage: std.builtin.LinkMode,
 };
 
 pub fn addExe(
@@ -134,7 +138,7 @@ pub fn addExe(
     mod.addCSourceFile(.{ .file = cpython_dir.path(b, "Python/dynload_shlib.c"), .flags = dynload_flags });
     applyLinkTokens(mod, opts.link_libs, &.{});
 
-    return b.addExecutable(.{ .name = opts.name, .root_module = mod });
+    return b.addExecutable(.{ .name = opts.name, .root_module = mod, .linkage = opts.linkage });
 }
 
 /// `-I<path>` tokens pulled from the Makefile are relative to `$(srcdir)`

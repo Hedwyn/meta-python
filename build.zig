@@ -104,6 +104,7 @@ fn buildPosix(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
         .link_libs = link_libs,
         .frozen_headers = &.{},
         .dynload_flags = dynload_flags,
+        .linkage = options.libc_linkage,
     });
 
     var early_headers = std.StringHashMap(std.Build.LazyPath).init(gpa);
@@ -133,6 +134,7 @@ fn buildPosix(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
         .link_libs = link_libs,
         .frozen_headers = early_headers_list.items,
         .dynload_flags = dynload_flags,
+        .linkage = options.libc_linkage,
     });
 
     // _bootstrap_python needs Lib/ sitting next to it (in the layout getpath.c's
@@ -179,6 +181,7 @@ fn buildPosix(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
         .link_libs = link_libs,
         .frozen_headers = frozen_headers.items,
         .dynload_flags = dynload_flags,
+        .linkage = options.libc_linkage,
     });
     final_exe.root_module.addCSourceFile(.{ .file = deepfreeze_c, .flags = core_cflags });
     final_exe.rdynamic = true; // -export-dynamic: extension .so's resolve Python C API symbols against us
