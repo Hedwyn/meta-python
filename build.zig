@@ -166,25 +166,81 @@ fn buildPosix(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
 
     const deepfreeze_c = Utils.addDeepfreeze(b, cpython_dir, bootstrap_packaged_exe, deepfreeze_headers.items, deepfreeze_names.items);
 
-    // ---- stage 3: the final "python" executable (the one users run)
+    // ---- stage 3: the final "python" executable (the one users run).
     // Built with the target optimization level (not Debug like stages 1-2).
     // Includes all ~24 frozen modules (4 bootstrap + 20 regular), deepfroze stdlib
     // bytecode, and core interpreter. Extension modules are NOT linked in statically
     // -- they're built as standalone .so files below and dlopen()'d at import time,
     // same as CPython normally does. This enables dynamic linking and relocatability.
-    const final_exe = Utils.addExe(b, cpython_dir, target, optimize, gpa, .{
-        .name = "python",
-        .core_sources = core_sources.items,
-        .core_cflags = core_cflags,
-        .extra_sources = &.{ "Programs/python.c", "Modules/getpath.c", "Python/frozen.c" },
-        .extra_flags = getpath_flags,
-        .link_libs = link_libs,
-        .frozen_headers = frozen_headers.items,
-        .dynload_flags = dynload_flags,
-        .linkage = options.libc_linkage,
-    });
-    final_exe.root_module.addCSourceFile(.{ .file = deepfreeze_c, .flags = core_cflags });
-    final_exe.rdynamic = true; // -export-dynamic: extension .so's resolve Python C API symbols against us
+    //
+    // `python-linkage` picks between two shapes for this stage:
+    //   off (default): one monolithic executable, as above -- extension .so's
+    //     resolve Python C-API symbols against it via `-rdynamic`.
+    //   static/dynamic: the core interpreter is split into a standalone
+    //     libpythonX.Y (an archive or a real .so) plus a thin shim exe that's
+    //     just Programs/python.c linked against it, matching upstream
+    //     CPython's own `--enable-shared` layout. "dynamic" is the one that
+    //     matters: extension modules then link against the real libpythonX.Y.so
+    //     the ordinary way instead of depending on `-rdynamic` -- which is what
+    //     actually lets dlopen()'d extensions work under `libc-linkage=static`
+    //     (see build/options.zig's python_linkage doc comment for why).
+    const final_exe, const libpython_lib = if (options.python_linkage) |python_linkage| blk: {
+        const lib = Utils.addPythonLib(b, cpython_dir, target, optimize, gpa, .{
+            .name = b.fmt("python{s}", .{version}),
+            .core_sources = core_sources.items,
+            .core_cflags = core_cflags,
+            .extra_sources = &.{ "Modules/getpath.c", "Python/frozen.c" },
+            .extra_flags = getpath_flags,
+            .link_libs = link_libs,
+            .frozen_headers = frozen_headers.items,
+            .dynload_flags = dynload_flags,
+            .deepfreeze_c = deepfreeze_c,
+            .linkage = python_linkage,
+        });
+
+        const shim_mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+        shim_mod.addIncludePath(cpython_dir);
+        shim_mod.addIncludePath(cpython_dir.path(b, "Include"));
+        shim_mod.addIncludePath(cpython_dir.path(b, "Include/internal"));
+        shim_mod.addCSourceFile(.{
+            .file = cpython_dir.path(b, "Programs/python.c"),
+            .flags = Utils.extractIncludePaths(shim_mod, b, cpython_dir, gpa, core_cflags),
+        });
+        shim_mod.linkLibrary(lib);
+
+        const exe = b.addExecutable(.{ .name = "python", .root_module = shim_mod, .linkage = options.libc_linkage });
+        if (python_linkage == .dynamic) {
+            // Real .so: extensions and the shim resolve against it via an
+            // ordinary dependency, not `-rdynamic`. See addSharedModule's
+            // matching addRPathSpecial for why the extra absolute rpath Zig
+            // also emits here is harmless.
+            shim_mod.addRPathSpecial("$ORIGIN/../lib");
+        } else {
+            // Static: the archive still ends up fully absorbed into this
+            // one exe at link time -- functionally the same monolithic
+            // blob as `off`, so extensions still need `-rdynamic` to reach it.
+            exe.rdynamic = true;
+        }
+        break :blk .{ exe, lib };
+    } else blk: {
+        const exe = Utils.addExe(b, cpython_dir, target, optimize, gpa, .{
+            .name = "python",
+            .core_sources = core_sources.items,
+            .core_cflags = core_cflags,
+            .extra_sources = &.{ "Programs/python.c", "Modules/getpath.c", "Python/frozen.c" },
+            .extra_flags = getpath_flags,
+            .link_libs = link_libs,
+            .frozen_headers = frozen_headers.items,
+            .dynload_flags = dynload_flags,
+            .linkage = options.libc_linkage,
+        });
+        exe.root_module.addCSourceFile(.{ .file = deepfreeze_c, .flags = core_cflags });
+        exe.rdynamic = true; // -export-dynamic: extension .so's resolve Python C API symbols against us
+        break :blk .{ exe, null };
+    };
+    // Only a real libpythonX.Y.so (not the .a, and not "off") gives extension
+    // modules something to link against instead of `-rdynamic`.
+    const dynamic_python_lib: ?*std.Build.Step.Compile = if (options.python_linkage == .dynamic) libpython_lib else null;
 
     // ---- optional extension modules, one shared object each, dynamically linked.
     const common_module_cflags = Makefile.tokens(
@@ -219,13 +275,14 @@ fn buildPosix(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
             std.debug.print("skipping module '{s}': dependency linkage is off\n", .{name});
             continue;
         }
-        const lib = Utils.addSharedModule(b, cpython_dir, mk, gpa, target, optimize, common_module_cflags, name, static_overrides.items) orelse continue;
+        const lib = Utils.addSharedModule(b, cpython_dir, mk, gpa, target, optimize, common_module_cflags, name, static_overrides.items, dynamic_python_lib) orelse continue;
         shared_libs.append(gpa, lib) catch @panic("OOM");
     }
 
     // ---- install.
     const lib_dir = b.fmt("lib/python{s}", .{version});
     b.getInstallStep().dependOn(&b.addInstallArtifact(final_exe, .{}).step);
+    if (libpython_lib) |lib| b.getInstallStep().dependOn(&b.addInstallArtifact(lib, .{}).step);
     b.getInstallStep().dependOn(&b.addInstallDirectory(.{
         .source_dir = cpython_dir.path(b, "Lib"),
         .install_dir = .prefix,

@@ -30,6 +30,17 @@ pub const BuildOptions = struct {
     /// under `static` until extensions are statically linked into the exe
     /// instead of dlopen'd.
     libc_linkage: Linkage,
+    /// Whether the core interpreter is built as a standalone library that
+    /// the `python` executable and every extension module link against
+    /// ("static" -> libpythonX.Y.a, "dynamic" -> libpythonX.Y.so), or
+    /// compiled directly into one monolithic `python` executable ("off",
+    /// null here, the default -- what this project has always done). See
+    /// build.zig for both paths. "dynamic" is the one that actually fixes
+    /// dlopen()'d extensions under `libc_linkage=static`: linking against a
+    /// real `.so` is ordinary build-time symbol resolution, unlike relying
+    /// on `-rdynamic` to export the (possibly static, unregistered) main
+    /// executable's own symbols.
+    python_linkage: ?Linkage,
 };
 
 const lib_names = [_][]const u8{
@@ -105,6 +116,21 @@ pub fn parseOptions(b: *std.Build) BuildOptions {
             "libc_linkage doc comment in build/options.zig.\n",
         .{},
     );
+
+    const python_raw = b.option(
+        []const u8,
+        "python-linkage",
+        "Linkage for the core interpreter library: static, dynamic, or off (default: off)",
+    ) orelse "off";
+    options.python_linkage = parseLinkage(python_raw);
+    if (options.python_linkage == .dynamic and options.libc_linkage == .static)
+        std.debug.panic(
+            "python-linkage=dynamic requires libc-linkage=dynamic: a statically " ++
+                "linked executable has no dynamic section at all, so it can't " ++
+                "have an ordinary build-time dependency on a shared library. " ++
+                "Use python-linkage=static, or libc-linkage=dynamic.",
+            .{},
+        );
 
     return options;
 }

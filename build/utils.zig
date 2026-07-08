@@ -116,6 +116,37 @@ pub const ExeOptions = struct {
     linkage: std.builtin.LinkMode,
 };
 
+/// Shared setup between `addExe` and `addPythonLib`: include paths, core +
+/// extra sources, `dynload_shlib.c`, and system link tokens. Everything a
+/// "contains the CPython core" compile step needs, regardless of whether it
+/// ends up as an executable, a static archive, or a shared object.
+fn addCoreObjects(
+    b: *std.Build,
+    cpython_dir: std.Build.LazyPath,
+    mod: *std.Build.Module,
+    gpa: std.mem.Allocator,
+    core_sources: []const []const u8,
+    core_cflags: []const []const u8,
+    extra_sources: []const []const u8,
+    extra_flags: []const []const u8,
+    frozen_headers: []const std.Build.LazyPath,
+    dynload_flags: []const []const u8,
+    link_libs: []const u8,
+) void {
+    mod.addIncludePath(cpython_dir);
+    mod.addIncludePath(cpython_dir.path(b, "Include"));
+    mod.addIncludePath(cpython_dir.path(b, "Include/internal"));
+    for (frozen_headers) |h| mod.addIncludePath(h.dirname().dirname());
+
+    const core_flags = extractIncludePaths(mod, b, cpython_dir, gpa, core_cflags);
+    const resolved_extra_flags = extractIncludePaths(mod, b, cpython_dir, gpa, extra_flags);
+    const resolved_dynload_flags = extractIncludePaths(mod, b, cpython_dir, gpa, dynload_flags);
+    mod.addCSourceFiles(.{ .root = cpython_dir, .files = core_sources, .flags = core_flags });
+    mod.addCSourceFiles(.{ .root = cpython_dir, .files = extra_sources, .flags = resolved_extra_flags });
+    mod.addCSourceFile(.{ .file = cpython_dir.path(b, "Python/dynload_shlib.c"), .flags = resolved_dynload_flags });
+    applyLinkTokens(mod, link_libs, &.{});
+}
+
 pub fn addExe(
     b: *std.Build,
     cpython_dir: std.Build.LazyPath,
@@ -125,20 +156,72 @@ pub fn addExe(
     opts: ExeOptions,
 ) *std.Build.Step.Compile {
     const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
-    mod.addIncludePath(cpython_dir);
-    mod.addIncludePath(cpython_dir.path(b, "Include"));
-    mod.addIncludePath(cpython_dir.path(b, "Include/internal"));
-    for (opts.frozen_headers) |h| mod.addIncludePath(h.dirname().dirname());
-
-    const core_flags = extractIncludePaths(mod, b, cpython_dir, gpa, opts.core_cflags);
-    const extra_flags = extractIncludePaths(mod, b, cpython_dir, gpa, opts.extra_flags);
-    const dynload_flags = extractIncludePaths(mod, b, cpython_dir, gpa, opts.dynload_flags);
-    mod.addCSourceFiles(.{ .root = cpython_dir, .files = opts.core_sources, .flags = core_flags });
-    mod.addCSourceFiles(.{ .root = cpython_dir, .files = opts.extra_sources, .flags = extra_flags });
-    mod.addCSourceFile(.{ .file = cpython_dir.path(b, "Python/dynload_shlib.c"), .flags = dynload_flags });
-    applyLinkTokens(mod, opts.link_libs, &.{});
+    addCoreObjects(
+        b,
+        cpython_dir,
+        mod,
+        gpa,
+        opts.core_sources,
+        opts.core_cflags,
+        opts.extra_sources,
+        opts.extra_flags,
+        opts.frozen_headers,
+        opts.dynload_flags,
+        opts.link_libs,
+    );
 
     return b.addExecutable(.{ .name = opts.name, .root_module = mod, .linkage = opts.linkage });
+}
+
+pub const LibPythonOptions = struct {
+    name: []const u8,
+    core_sources: []const []const u8,
+    core_cflags: []const []const u8,
+    /// `Modules/getpath.c` and `Python/frozen.c` -- everything stage 3 used
+    /// to compile straight into the executable that now belongs in the
+    /// library instead. `Programs/python.c` is deliberately NOT here: it
+    /// stays in the thin shim executable (see build.zig), same split
+    /// upstream CPython uses for `--enable-shared` builds.
+    extra_sources: []const []const u8,
+    extra_flags: []const []const u8,
+    link_libs: []const u8,
+    frozen_headers: []const std.Build.LazyPath,
+    dynload_flags: []const []const u8,
+    deepfreeze_c: std.Build.LazyPath,
+    /// `.static` -> libpythonX.Y.a (still ends up fully absorbed into
+    /// whatever links it -- a build-organization split, not a runtime one).
+    /// `.dynamic` -> a real libpythonX.Y.so with its own `.dynsym`, so
+    /// extension modules and the shim resolve Python C-API symbols via an
+    /// ordinary build-time dependency instead of `-rdynamic`.
+    linkage: std.builtin.LinkMode,
+};
+
+pub fn addPythonLib(
+    b: *std.Build,
+    cpython_dir: std.Build.LazyPath,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    gpa: std.mem.Allocator,
+    opts: LibPythonOptions,
+) *std.Build.Step.Compile {
+    const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    addCoreObjects(
+        b,
+        cpython_dir,
+        mod,
+        gpa,
+        opts.core_sources,
+        opts.core_cflags,
+        opts.extra_sources,
+        opts.extra_flags,
+        opts.frozen_headers,
+        opts.dynload_flags,
+        opts.link_libs,
+    );
+    mod.addCSourceFile(.{ .file = opts.deepfreeze_c, .flags = opts.core_cflags });
+
+    const lib = b.addLibrary(.{ .name = opts.name, .root_module = mod, .linkage = opts.linkage });
+    return lib;
 }
 
 /// `-I<path>` tokens pulled from the Makefile are relative to `$(srcdir)`
@@ -252,6 +335,11 @@ pub fn addSharedModule(
     common_cflags: []const []const u8,
     name: []const u8,
     overrides: []const StaticOverride,
+    /// When the core interpreter is built as a real libpythonX.Y.so
+    /// (`python-linkage=dynamic`), every extension module links against it
+    /// directly instead of relying on `-rdynamic` to resolve its Python
+    /// C-API references against the main executable at runtime.
+    python_lib: ?*std.Build.Step.Compile,
 ) ?*std.Build.Step.Compile {
     const rule = mk.findSharedModuleRule(gpa, name) orelse {
         std.debug.print("warning: no build rule found for module '{s}', skipping\n", .{name});
@@ -297,6 +385,18 @@ pub fn addSharedModule(
         });
     }
     applyLinkTokens(mod, std.mem.join(gpa, " ", rule.recipe) catch @panic("OOM"), overrides);
+
+    if (python_lib) |lib| {
+        mod.linkLibrary(lib);
+        // lib-dynload/foo.so -> ../.. reaches the prefix's lib/ dir, where
+        // libpythonX.Y.so is installed (see build.zig's install step). Zig
+        // also unconditionally emits an extra `-rpath <build-cache-dir>`
+        // entry for same-build `linkLibrary` dynamic dependencies (no public
+        // flag suppresses it) -- harmless: it's just a dead RUNPATH entry
+        // once the tree is installed/moved elsewhere, and this $ORIGIN one
+        // still resolves correctly (verified by relocating a built tree).
+        mod.addRPathSpecial("$ORIGIN/../..");
+    }
 
     return b.addLibrary(.{ .name = name, .root_module = mod, .linkage = .dynamic });
 }
