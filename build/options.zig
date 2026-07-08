@@ -18,17 +18,17 @@ pub const BuildOptions = struct {
     lzma_linkage: ?Linkage,
     tk_linkage: ?Linkage,
     /// Unlike the third-party deps above, libc is mandatory -- no "off".
-    /// Defaults to `dynamic`. `static` builds fine but currently produces a
-    /// mostly non-functional interpreter: extension modules are still
-    /// separate `.so`s dlopen()'d at import time (see build.zig), and a
-    /// fully static (or static-PIE) executable has no usable dynamic symbol
-    /// table for them to resolve Python C-API calls (e.g. `PyExc_OSError`)
-    /// against -- confirmed empirically (`readelf -d`/`--dyn-syms`, and
-    /// static-PIE + explicit `dlopen(NULL, RTLD_GLOBAL)` self-registration
-    /// still fail with "undefined symbol"). This is the exact libdl
-    /// constraint research.md already flags. Only core/frozen stdlib works
-    /// under `static` until extensions are statically linked into the exe
-    /// instead of dlopen'd.
+    /// Defaults to `dynamic`. `static` builds fine but, unless paired with
+    /// `python_linkage = .dynamic`, produces a mostly non-functional
+    /// interpreter: a fully static (or static-PIE) executable has no usable
+    /// dynamic symbol table, so every dlopen()'d extension module fails to
+    /// resolve Python C-API calls (e.g. `PyExc_OSError`) against it --
+    /// confirmed empirically (`readelf -d`/`--dyn-syms`, and static-PIE +
+    /// explicit `dlopen(NULL, RTLD_GLOBAL)` self-registration still fail
+    /// with "undefined symbol"). This is the exact libdl constraint
+    /// research.md already flags. See `python_linkage` below for the fix,
+    /// and the warning/panic in `parseOptions` for which combinations are
+    /// actually allowed.
     libc_linkage: Linkage,
     /// Whether the core interpreter is built as a standalone library that
     /// the `python` executable and every extension module link against
@@ -108,14 +108,6 @@ pub fn parseOptions(b: *std.Build) BuildOptions {
         "Linkage for libc: static or dynamic (default: dynamic)",
     ) orelse "dynamic";
     options.libc_linkage = parseRequiredLinkage(libc_raw);
-    if (options.libc_linkage == .static) std.debug.print(
-        "warning: libc-linkage=static produces an executable with no usable " ++
-            "dynamic symbol table -- every dlopen()'d extension module (zlib, " ++
-            "ssl, sqlite3, ctypes, _socket, ...) will fail to import with " ++
-            "'undefined symbol'. Only core/frozen stdlib works. See the " ++
-            "libc_linkage doc comment in build/options.zig.\n",
-        .{},
-    );
 
     const python_raw = b.option(
         []const u8,
@@ -131,6 +123,26 @@ pub fn parseOptions(b: *std.Build) BuildOptions {
                 "Use python-linkage=static, or libc-linkage=dynamic.",
             .{},
         );
+
+    // The only two shapes left once the .dynamic+.static combo above is
+    // ruled out: "off" (one monolithic exe) and "static" (a libpythonX.Y.a
+    // that still ends up fully absorbed into one monolithic exe -- see
+    // addPythonLib). Both rely on `-rdynamic` for extension modules to
+    // resolve Python C-API symbols against the exe; `libc-linkage=static`
+    // strips the exe's dynamic symbol table entirely, breaking that for
+    // every dlopen()'d extension. Only `python-linkage=dynamic` (a real
+    // libpythonX.Y.so) avoids this -- and that combination already panics
+    // above rather than reaching here.
+    if (options.libc_linkage == .static) std.debug.print(
+        "warning: libc-linkage=static with python-linkage={s} produces an " ++
+            "executable with no usable dynamic symbol table -- every " ++
+            "dlopen()'d extension module (zlib, ssl, sqlite3, ctypes, " ++
+            "_socket, ...) will fail to import with 'undefined symbol'. Only " ++
+            "core/frozen stdlib works. Use python-linkage=dynamic (which " ++
+            "requires libc-linkage=dynamic) to keep extensions working. See " ++
+            "README.md's \"libc vs. python linkage\" section.\n",
+        .{if (options.python_linkage == .static) "static" else "off"},
+    );
 
     return options;
 }
