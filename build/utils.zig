@@ -132,7 +132,7 @@ pub fn addExe(
     mod.addCSourceFiles(.{ .root = cpython_dir, .files = opts.core_sources, .flags = core_flags });
     mod.addCSourceFiles(.{ .root = cpython_dir, .files = opts.extra_sources, .flags = extra_flags });
     mod.addCSourceFile(.{ .file = cpython_dir.path(b, "Python/dynload_shlib.c"), .flags = dynload_flags });
-    applyLinkTokens(mod, opts.link_libs);
+    applyLinkTokens(mod, opts.link_libs, &.{});
 
     return b.addExecutable(.{ .name = opts.name, .root_module = mod });
 }
@@ -165,11 +165,30 @@ pub fn extractIncludePaths(
     return flags.toOwnedSlice(gpa) catch @panic("OOM");
 }
 
-pub fn applyLinkTokens(mod: *std.Build.Module, expanded: []const u8) void {
+/// Maps a system library name (the `-l<name>` token CPython's own Makefile
+/// would otherwise pass) to a Zig-built static artifact that should be baked
+/// into the module instead of dynamically linking the host's `.so`.
+pub const StaticOverride = struct {
+    lib_name: []const u8,
+    artifact: *std.Build.Step.Compile,
+};
+
+fn findOverride(overrides: []const StaticOverride, lib_name: []const u8) ?*std.Build.Step.Compile {
+    for (overrides) |o| {
+        if (std.mem.eql(u8, o.lib_name, lib_name)) return o.artifact;
+    }
+    return null;
+}
+
+pub fn applyLinkTokens(mod: *std.Build.Module, expanded: []const u8, overrides: []const StaticOverride) void {
     var it = std.mem.tokenizeAny(u8, expanded, " \t");
     while (it.next()) |tok| {
         if (std.mem.startsWith(u8, tok, "-l")) {
-            mod.linkSystemLibrary(tok[2..], .{});
+            if (findOverride(overrides, tok[2..])) |artifact| {
+                mod.linkLibrary(artifact);
+            } else {
+                mod.linkSystemLibrary(tok[2..], .{});
+            }
         } else if (std.mem.startsWith(u8, tok, "-L")) {
             mod.addLibraryPath(.{ .cwd_relative = tok[2..] });
         }
@@ -228,6 +247,7 @@ pub fn addSharedModule(
     optimize: std.builtin.OptimizeMode,
     common_cflags: []const []const u8,
     name: []const u8,
+    overrides: []const StaticOverride,
 ) ?*std.Build.Step.Compile {
     const rule = mk.findSharedModuleRule(gpa, name) orelse {
         std.debug.print("warning: no build rule found for module '{s}', skipping\n", .{name});
@@ -272,7 +292,7 @@ pub fn addSharedModule(
             .flags = extractIncludePaths(mod, b, cpython_dir, gpa, Makefile.tokens(gpa, mk.get(gpa, archive.cflags_var))),
         });
     }
-    applyLinkTokens(mod, std.mem.join(gpa, " ", rule.recipe) catch @panic("OOM"));
+    applyLinkTokens(mod, std.mem.join(gpa, " ", rule.recipe) catch @panic("OOM"), overrides);
 
     return b.addLibrary(.{ .name = name, .root_module = mod, .linkage = .dynamic });
 }

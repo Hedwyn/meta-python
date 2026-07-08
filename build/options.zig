@@ -33,9 +33,15 @@ fn parseLinkage(raw: []const u8) ?Linkage {
     std.debug.panic("invalid linkage '{s}': expected 'static', 'dynamic', or 'off'", .{raw});
 }
 
+/// Libs that can actually be built from source and statically linked in.
+/// Everything else in `lib_names` still only supports "dynamic"/"off".
+const static_implemented = std.StaticStringMap(void).initComptime(.{
+    .{"zlib"},
+});
+
 /// Reads `-D{lib}-linkage=...` for every third-party dependency (defaulting
-/// to "off" when unset). Panics on "static": nothing actually builds any of
-/// these libs from source yet, so it's a placeholder request for now.
+/// to "off" when unset). Panics on "static" for libs not in
+/// `static_implemented`: nothing builds those from source yet.
 pub fn parseOptions(b: *std.Build) BuildOptions {
     var options: BuildOptions = undefined;
     inline for (lib_names) |name| {
@@ -45,7 +51,7 @@ pub fn parseOptions(b: *std.Build) BuildOptions {
             "Linkage for " ++ name ++ ": static, dynamic, or off (default: off)",
         ) orelse "off";
         const linkage = parseLinkage(raw);
-        if (linkage) |l| if (l == .static)
+        if (linkage) |l| if (l == .static and !static_implemented.has(name))
             std.debug.panic(name ++ "-linkage=static: static linking not implemented yet", .{});
         @field(options, name ++ "_linkage") = linkage;
     }

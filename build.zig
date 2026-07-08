@@ -189,6 +189,16 @@ fn buildPosix(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
         std.mem.concat(gpa, u8, &.{ mk.get(gpa, "PY_STDMODULE_CFLAGS"), " ", mk.get(gpa, "CCSHARED") }) catch @panic("OOM"),
     );
     const shared_names = Makefile.tokens(gpa, mk.get(gpa, "MODSHARED_NAMES"));
+
+    // Third-party libs requested as `static`: built from source via their
+    // allyourcodebase Zig package and baked into the extension module that
+    // needs them, instead of dynamically linking the host's system `.so`.
+    var static_overrides: std.ArrayList(Utils.StaticOverride) = .empty;
+    if (options.zlib_linkage == .static) {
+        const zlib_dep = b.dependency("zlib", .{ .target = target, .optimize = optimize });
+        static_overrides.append(gpa, .{ .lib_name = "z", .artifact = zlib_dep.artifact("z") }) catch @panic("OOM");
+    }
+
     var shared_libs: std.ArrayList(*std.Build.Step.Compile) = .empty;
     for (shared_names) |name| {
         if (Utils.skip_modules.has(name)) continue;
@@ -196,7 +206,7 @@ fn buildPosix(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
             std.debug.print("skipping module '{s}': dependency linkage is off\n", .{name});
             continue;
         }
-        const lib = Utils.addSharedModule(b, cpython_dir, mk, gpa, target, optimize, common_module_cflags, name) orelse continue;
+        const lib = Utils.addSharedModule(b, cpython_dir, mk, gpa, target, optimize, common_module_cflags, name, static_overrides.items) orelse continue;
         shared_libs.append(gpa, lib) catch @panic("OOM");
     }
 
