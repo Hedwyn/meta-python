@@ -136,7 +136,14 @@ fn addCoreObjects(
     mod.addIncludePath(cpython_dir);
     mod.addIncludePath(cpython_dir.path(b, "Include"));
     mod.addIncludePath(cpython_dir.path(b, "Include/internal"));
-    for (frozen_headers) |h| mod.addIncludePath(h.dirname().dirname());
+    // Each generated `Python/frozen_modules/x.h` is #include-d two different
+    // ways: `Python/frozen.c` says `#include "frozen_modules/x.h"` (root at
+    // .../Python), while `Programs/_bootstrap_python.c` says `#include
+    // "Python/frozen_modules/x.h"` (root one level up). Add both depths.
+    for (frozen_headers) |h| {
+        mod.addIncludePath(h.dirname().dirname());
+        mod.addIncludePath(h.dirname().dirname().dirname());
+    }
 
     const core_flags = extractIncludePaths(mod, b, cpython_dir, gpa, core_cflags);
     const resolved_extra_flags = extractIncludePaths(mod, b, cpython_dir, gpa, extra_flags);
